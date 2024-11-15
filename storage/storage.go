@@ -10,9 +10,11 @@ type Transaction struct {
 	Type      string
 }
 
+//go:generate mockgen -destination=mock_storage.go -package=storage github.com/oanatmaria/ethblkcn-observer/storage Storage
 type Storage interface {
 	AddObservedAddress(address string) bool
-	IsObservedAddress(address string) bool
 	GetTransactions(address string) []Transaction
-	AddTransaction(tx Transaction)
+	AddTransactions(txs ...Transaction)
+	GetCurrentBlock() int
+	UpdateCurrentBlock(block int)
 }

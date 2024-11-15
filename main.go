@@ -25,8 +25,11 @@ func main() {
 	}()
 
 	storage := storage.NewMemoryStorage()
-	client := client.NewHttpClient()
-	parser := parser.NewEthParser(storage, client)
+	client := client.NewEthClient()
+	parser, err := parser.NewEthParser(storage, client)
+	if err != nil {
+		log.Fatalf("Server error: can not start server, err: %v", err)
+	}
 
 	if parser == nil {
 		log.Fatal("Server error: can not start server, failed to fetch latest block number")

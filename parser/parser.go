@@ -1,6 +1,12 @@
 package parser
 
-import "github.com/oanatmaria/ethblkcn-observer/storage"
+import (
+	"context"
+
+	"github.com/oanatmaria/ethblkcn-observer/storage"
+)
+
+//go:generate mockgen -destination=mock_perser.go -package=parser github.com/oanatmaria/ethblkcn-observer/parser Parser
 
 type Parser interface {
 	// last parsed block
@@ -10,5 +16,5 @@ type Parser interface {
 	// list of inbound or outbound transactions for an address
 	GetTransactions(address string) []storage.Transaction
 
-	ProcessNewBlocks()
+	ProcessNewBlocks(ctx context.Context)
 }

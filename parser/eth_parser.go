@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"sync"
 
@@ -9,28 +11,26 @@ import (
 )
 
 type EthParser struct {
-	storage      storage.Storage
-	client       client.Client
-	currentBlock int
-	mu           sync.Mutex
+	storage storage.Storage
+	client  client.Client
 }
 
-func NewEthParser(storage storage.Storage, client client.Client) Parser {
+func NewEthParser(storage storage.Storage, client client.Client) (Parser, error) {
 	latestBlock, err := client.GetLatestBlockNumber()
 	if err != nil {
-		log.Printf("Error fetching latest block: %v\n", err)
-		return nil
+		return nil, fmt.Errorf("error fetching latest block: %v", err)
 	}
 
+	storage.UpdateCurrentBlock(latestBlock)
+
 	return &EthParser{
-		storage:      storage,
-		client:       client,
-		currentBlock: latestBlock,
-	}
+		storage: storage,
+		client:  client,
+	}, nil
 }
 
 func (p *EthParser) GetCurrentBlock() int {
-	return p.currentBlock
+	return p.storage.GetCurrentBlock()
 }
 
 func (p *EthParser) Subscribe(address string) bool {
@@ -40,30 +40,59 @@ func (p *EthParser) Subscribe(address string) bool {
 func (p *EthParser) GetTransactions(address string) []storage.Transaction {
 	return p.storage.GetTransactions(address)
 }
-
-func (p *EthParser) ProcessNewBlocks() {
+func (p *EthParser) ProcessNewBlocks(ctx context.Context) {
 	latestBlock, err := p.client.GetLatestBlockNumber()
 	if err != nil {
 		log.Printf("Error fetching latest block: %v\n", err)
 		return
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for blockNum := p.currentBlock + 1; blockNum <= latestBlock; blockNum++ {
-		block, err := p.client.GetBlockByNumber(blockNum)
-		if err != nil {
-			log.Printf("Error fetching block %d: %v\n", blockNum, err)
-			continue
-		}
-
-		for _, tx := range block.Transactions {
-			if p.storage.IsObservedAddress(tx.From) || p.storage.IsObservedAddress(tx.To) {
-				p.storage.AddTransaction(tx)
-			}
-		}
+	currentBlock := p.storage.GetCurrentBlock()
+	if currentBlock >= latestBlock {
+		return
 	}
 
-	p.currentBlock = latestBlock
+	log.Println(currentBlock)
+
+	blockChan := make(chan int)
+	var wg sync.WaitGroup
+
+	numWorkers := 4
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case blockNum, ok := <-blockChan:
+					if !ok {
+						return
+					}
+					block, err := p.client.GetBlockByNumber(blockNum)
+					if err != nil {
+						log.Printf("Error fetching block %d: %v\n", blockNum, err)
+						continue
+					}
+					p.storage.AddTransactions(block.Transactions...)
+				}
+			}
+
+		}()
+	}
+
+	for blockNum := currentBlock + 1; blockNum <= latestBlock; blockNum++ {
+		select {
+		case <-ctx.Done():
+			close(blockChan)
+			return
+		case blockChan <- blockNum:
+		}
+	}
+	close(blockChan)
+
+	wg.Wait()
+
+	p.storage.UpdateCurrentBlock(latestBlock)
 }

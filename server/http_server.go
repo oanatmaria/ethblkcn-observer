@@ -3,10 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/oanatmaria/ethblkcn-observer/parser"
@@ -29,9 +29,9 @@ func (s *HttpServer) Start(ctx context.Context) error {
 	go s.startBlockProcessing(ctx)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/subscribe", s.wrapHandler(s.handleSubscribe))
-	mux.HandleFunc("/transactions", s.wrapHandler(s.handleTransactions))
-	mux.HandleFunc("/get_current_block", s.wrapHandler(s.handleGetCurrentBlock))
+	mux.HandleFunc("POST /subscribe", s.wrapHandler(s.handleSubscribe))
+	mux.HandleFunc("GET /transactions", s.wrapHandler(s.handleTransactions))
+	mux.HandleFunc("GET /current_block", s.wrapHandler(s.handleCurrentBlock))
 
 	s.server = &http.Server{
 		Addr:    s.addr,
@@ -43,7 +43,9 @@ func (s *HttpServer) Start(ctx context.Context) error {
 		log.Println("Shutting down server...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.server.Shutdown(shutdownCtx)
+		if err := s.server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Error shutting down server: %v", err)
+		}
 	}()
 
 	log.Printf("Server is running at %s\n", s.addr)
@@ -61,7 +63,7 @@ func (s *HttpServer) startBlockProcessing(ctx context.Context) {
 			return
 		case <-ticker.C:
 			log.Println("Processing blocks...")
-			s.parser.ProcessNewBlocks()
+			s.parser.ProcessNewBlocks(ctx)
 			log.Println("Done processing latest blocks...")
 		}
 	}
@@ -90,10 +92,17 @@ func (s *HttpServer) handleSubscribe(w http.ResponseWriter, r *http.Request) err
 		return nil
 	}
 
+	if !isValidEthAddress(address) {
+		http.Error(w, "Invalid Ethereum address", http.StatusBadRequest)
+		return nil
+	}
+
 	subscribed := s.parser.Subscribe(address)
 	if subscribed {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Subscribed to address: %s\n", address)
+		if _, err := fmt.Fprintf(w, "Subscribed to address: %s\n", address); err != nil {
+			log.Printf("Error writing response: %v", err)
+		}
 	} else {
 		http.Error(w, fmt.Sprintf("Address already subscribed: %s", address), http.StatusBadRequest)
 	}
@@ -103,7 +112,8 @@ func (s *HttpServer) handleSubscribe(w http.ResponseWriter, r *http.Request) err
 func (s *HttpServer) handleTransactions(w http.ResponseWriter, r *http.Request) error {
 	address := r.URL.Query().Get("address")
 	if address == "" {
-		return errors.New("missing address parameter")
+		http.Error(w, "Missing address parameter", http.StatusBadRequest)
+		return nil
 	}
 
 	transactions := s.parser.GetTransactions(address)
@@ -111,8 +121,14 @@ func (s *HttpServer) handleTransactions(w http.ResponseWriter, r *http.Request) 
 	return json.NewEncoder(w).Encode(transactions)
 }
 
-func (s *HttpServer) handleGetCurrentBlock(w http.ResponseWriter, r *http.Request) error {
+func (s *HttpServer) handleCurrentBlock(w http.ResponseWriter, r *http.Request) error {
 	currentBlock := s.parser.GetCurrentBlock()
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(currentBlock)
+}
+
+func isValidEthAddress(address string) bool {
+	regex := `^0x[0-9a-fA-F]{40}$`
+	matched, _ := regexp.MatchString(regex, address)
+	return matched
 }

@@ -3,7 +3,9 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -17,66 +19,116 @@ const (
 	smartContractExecutionType  = "Contract execution"
 )
 
-type EthClient struct {
+type RpcRequest struct {
+	Jsonrpc string        `json:"jsonrpc"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params"`
+	ID      int           `json:"id"`
 }
 
-func NewHttpClient() Client {
+type RpcResponse struct {
+	Jsonrpc string      `json:"jsonrpc"`
+	ID      int         `json:"id"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   *RpcError   `json:"error,omitempty"`
+}
+
+type RpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type BlockResponse struct {
+	Number       string              `json:"number"`
+	Transactions []TransactionDetail `json:"transactions"`
+}
+
+type TransactionDetail struct {
+	Hash      string `json:"hash"`
+	From      string `json:"from"`
+	To        string `json:"to,omitempty"`
+	Value     string `json:"value"`
+	BlockHash string `json:"blockHash"`
+}
+
+type EthClient struct {
+	baseUrl string
+}
+
+func NewEthClient() Client {
 	return &EthClient{}
 }
 
 func (c *EthClient) GetLatestBlockNumber() (int, error) {
-	payload := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "eth_blockNumber",
-		"params":  []interface{}{},
-		"id":      1,
+	payload := RpcRequest{
+		Jsonrpc: "2.0",
+		Method:  "eth_blockNumber",
+		Params:  []interface{}{},
+		ID:      1,
 	}
+
 	response, err := c.sendRequest(payload)
 	if err != nil {
 		return 0, err
 	}
-	blockHex := response["result"].(string)
-	blockNum, _ := strconv.ParseInt(blockHex[2:], 16, 64)
+
+	blockHex, ok := response.Result.(string)
+	if !ok {
+		return 0, errors.New("unexpected response format for block number")
+	}
+
+	blockNum, err := strconv.ParseInt(blockHex[2:], 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse block number: %v", err)
+	}
+
 	return int(blockNum), nil
 }
 
-func (c *EthClient) GetBlockByNumber(blockNum int) (*Block, error) {
+func (c *EthClient) GetBlockByNumber(blockNum int) (Block, error) {
 	blockData, err := c.fetchBlockData(blockNum)
 	if err != nil {
-		return nil, err
+		return Block{}, fmt.Errorf("failed to fetch block data: %v", err)
 	}
 
-	transactions, err := c.parseTransactions(blockData["transactions"].([]interface{}), blockNum)
+	transactions, err := c.parseTransactions(blockData.Transactions, blockNum)
 	if err != nil {
-		return nil, err
+		return Block{}, fmt.Errorf("failed to parse transactions: %v", err)
 	}
 
-	return &Block{
+	// Construct the Block struct to return
+	return Block{
 		Number:       blockNum,
 		Transactions: transactions,
 	}, nil
 }
 
-func (c *EthClient) fetchBlockData(blockNum int) (map[string]interface{}, error) {
-	payload := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "eth_getBlockByNumber",
-		"params":  []interface{}{fmt.Sprintf("0x%x", blockNum), true},
-		"id":      1,
+func (c *EthClient) fetchBlockData(blockNum int) (BlockResponse, error) {
+	payload := RpcRequest{
+		Jsonrpc: "2.0",
+		Method:  "eth_getBlockByNumber",
+		Params:  []interface{}{fmt.Sprintf("0x%x", blockNum), true},
+		ID:      1,
 	}
 
 	response, err := c.sendRequest(payload)
 	if err != nil {
-		return nil, err
+		return BlockResponse{}, err
 	}
 
-	return response["result"].(map[string]interface{}), nil
+	var block BlockResponse
+	err = mapToStruct(response.Result, &block)
+	if err != nil {
+		return BlockResponse{}, err
+	}
+
+	return block, nil
 }
 
-func (c *EthClient) parseTransactions(transactionsData []interface{}, blockNum int) ([]storage.Transaction, error) {
+func (c *EthClient) parseTransactions(transactionsData []TransactionDetail, blockNum int) ([]storage.Transaction, error) {
 	transactions := []storage.Transaction{}
 	for _, tx := range transactionsData {
-		parsedTx, err := c.parseTransaction(tx.(map[string]interface{}), blockNum)
+		parsedTx, err := c.parseTransaction(tx, blockNum)
 		if err != nil {
 			return nil, err
 		}
@@ -85,13 +137,13 @@ func (c *EthClient) parseTransactions(transactionsData []interface{}, blockNum i
 	return transactions, nil
 }
 
-func (c *EthClient) parseTransaction(txMap map[string]interface{}, blockNum int) (storage.Transaction, error) {
+func (c *EthClient) parseTransaction(txDetail TransactionDetail, blockNum int) (storage.Transaction, error) {
 	var txType, toAddress string
 
-	if txMap["to"] == nil {
+	if txDetail.To == "" {
 		txType = smartContractDeploymentType
 	} else {
-		toAddress = txMap["to"].(string)
+		toAddress = txDetail.To
 		isSmartContract, err := c.isSmartContract(toAddress)
 		if err != nil {
 			return storage.Transaction{}, err
@@ -105,22 +157,22 @@ func (c *EthClient) parseTransaction(txMap map[string]interface{}, blockNum int)
 	}
 
 	return storage.Transaction{
-		Hash:      txMap["hash"].(string),
-		From:      txMap["from"].(string),
+		Hash:      txDetail.Hash,
+		From:      txDetail.From,
 		To:        toAddress,
-		Value:     txMap["value"].(string),
-		BlockHash: txMap["blockHash"].(string),
+		Value:     txDetail.Value,
+		BlockHash: txDetail.BlockHash,
 		BlockNum:  blockNum,
 		Type:      txType,
 	}, nil
 }
 
 func (c *EthClient) isSmartContract(address string) (bool, error) {
-	payload := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "eth_getCode",
-		"params":  []interface{}{address, "latest"},
-		"id":      1,
+	payload := RpcRequest{
+		Jsonrpc: "2.0",
+		Method:  "eth_getCode",
+		Params:  []interface{}{address, "latest"},
+		ID:      1,
 	}
 
 	response, err := c.sendRequest(payload)
@@ -128,23 +180,59 @@ func (c *EthClient) isSmartContract(address string) (bool, error) {
 		return false, err
 	}
 
-	code := response["result"].(string)
+	code, ok := response.Result.(string)
+	if !ok {
+		return false, errors.New("unexpected response format for smart contract code")
+	}
+
 	return code != "0x", nil
 }
 
-func (c *EthClient) sendRequest(payload map[string]interface{}) (map[string]interface{}, error) {
+func (c *EthClient) sendRequest(payload RpcRequest) (*RpcResponse, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal request payload: %v", err)
 	}
 
-	resp, err := http.Post(ethRrpUrl, "application/json", bytes.NewBuffer(payloadBytes))
+	var url string
+	// only for tests
+	if c.baseUrl != "" {
+		url = c.baseUrl
+	} else {
+		url = ethRrpUrl
+	}
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("HTTP request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			fmt.Printf("Error closing response body: %v\n", closeErr)
+		}
+	}()
 
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
-	return result, nil
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected HTTP response: %s - %s", resp.Status, string(body))
+	}
+
+	var rpcResponse RpcResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResponse); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	if rpcResponse.Error != nil {
+		return nil, fmt.Errorf("RPC error: %d - %s", rpcResponse.Error.Code, rpcResponse.Error.Message)
+	}
+
+	return &rpcResponse, nil
+}
+
+func mapToStruct(data interface{}, target interface{}) error {
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(bytes, target)
 }
