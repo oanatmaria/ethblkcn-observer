@@ -10,7 +10,7 @@ type MemoryStorage struct {
 	mu                sync.RWMutex
 }
 
-func NewMemoryStorage() *MemoryStorage {
+func NewMemoryStorage() Storage {
 	return &MemoryStorage{
 		observedAddresses: make(map[string]struct{}),
 		transactions:      make(map[string][]Transaction),

@@ -17,14 +17,14 @@ const (
 	smartContractExecutionType  = "Contract execution"
 )
 
-type HttpClient struct {
+type EthClient struct {
 }
 
-func NewHttpClient() *HttpClient {
-	return &HttpClient{}
+func NewHttpClient() Client {
+	return &EthClient{}
 }
 
-func (c *HttpClient) GetLatestBlockNumber() (int, error) {
+func (c *EthClient) GetLatestBlockNumber() (int, error) {
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "eth_blockNumber",
@@ -40,7 +40,7 @@ func (c *HttpClient) GetLatestBlockNumber() (int, error) {
 	return int(blockNum), nil
 }
 
-func (c *HttpClient) GetBlockByNumber(blockNum int) (*Block, error) {
+func (c *EthClient) GetBlockByNumber(blockNum int) (*Block, error) {
 	blockData, err := c.fetchBlockData(blockNum)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (c *HttpClient) GetBlockByNumber(blockNum int) (*Block, error) {
 	}, nil
 }
 
-func (c *HttpClient) fetchBlockData(blockNum int) (map[string]interface{}, error) {
+func (c *EthClient) fetchBlockData(blockNum int) (map[string]interface{}, error) {
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "eth_getBlockByNumber",
@@ -73,7 +73,7 @@ func (c *HttpClient) fetchBlockData(blockNum int) (map[string]interface{}, error
 	return response["result"].(map[string]interface{}), nil
 }
 
-func (c *HttpClient) parseTransactions(transactionsData []interface{}, blockNum int) ([]storage.Transaction, error) {
+func (c *EthClient) parseTransactions(transactionsData []interface{}, blockNum int) ([]storage.Transaction, error) {
 	transactions := []storage.Transaction{}
 	for _, tx := range transactionsData {
 		parsedTx, err := c.parseTransaction(tx.(map[string]interface{}), blockNum)
@@ -85,7 +85,7 @@ func (c *HttpClient) parseTransactions(transactionsData []interface{}, blockNum 
 	return transactions, nil
 }
 
-func (c *HttpClient) parseTransaction(txMap map[string]interface{}, blockNum int) (storage.Transaction, error) {
+func (c *EthClient) parseTransaction(txMap map[string]interface{}, blockNum int) (storage.Transaction, error) {
 	var txType, toAddress string
 
 	if txMap["to"] == nil {
@@ -115,7 +115,7 @@ func (c *HttpClient) parseTransaction(txMap map[string]interface{}, blockNum int
 	}, nil
 }
 
-func (c *HttpClient) isSmartContract(address string) (bool, error) {
+func (c *EthClient) isSmartContract(address string) (bool, error) {
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "eth_getCode",
@@ -132,7 +132,7 @@ func (c *HttpClient) isSmartContract(address string) (bool, error) {
 	return code != "0x", nil
 }
 
-func (c *HttpClient) sendRequest(payload map[string]interface{}) (map[string]interface{}, error) {
+func (c *EthClient) sendRequest(payload map[string]interface{}) (map[string]interface{}, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

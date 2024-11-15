@@ -15,7 +15,7 @@ type EthParser struct {
 	mu           sync.Mutex
 }
 
-func NewEthParser(storage storage.Storage, client client.Client) *EthParser {
+func NewEthParser(storage storage.Storage, client client.Client) Parser {
 	latestBlock, err := client.GetLatestBlockNumber()
 	if err != nil {
 		log.Printf("Error fetching latest block: %v\n", err)
